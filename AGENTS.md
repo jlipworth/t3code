@@ -1,3 +1,13 @@
+# This checkout is a research fork
+
+This is jlipworth's fork of `pingdotgg/t3code`. It exists so agents can investigate T3 Code and file well-evidenced issues upstream, not to carry code changes. This section is the fork's only change; everything below it is upstream's.
+
+- **Sync before anything else.** On `main` with a clean tree, run `git fetch upstream && git merge upstream/main && git push origin main`. If the tree is dirty, you are on another branch, or the merge conflicts, stop and ask. Research against stale code wastes the investigation: fixes and regressions land upstream daily.
+- **Research thoroughly before concluding.** Confirm the behavior on the latest upstream `main`, cite `file:line`, and check recent history for the area (`git log -S`, merged PRs). A recent PR is often the cause. When several explanations compete, investigate them in parallel with subagents. Ground claims in evidence: source, logs, or a copied database snapshot (see Test data). Never touch live state.
+- **Check for duplicates.** Search open and closed issues and PRs on `pingdotgg/t3code` before drafting.
+- **File upstream, with approval.** Show the developer the draft first, then run `gh issue create -R pingdotgg/t3code`. Include a repro, the expected behavior, and a targeted fix suggestion pointing at the code. Do not add a model or harness attribution footer to issues or comments.
+- **Do not modify upstream code here** or open PRs unless the developer asks.
+
 # T3 Code
 
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity) and serves web, desktop, and mobile clients.
