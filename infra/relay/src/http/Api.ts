@@ -21,7 +21,7 @@ import * as HttpTraceContext from "effect/http/HttpTraceContext";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
-import { httpHeaderRedactionLayer } from "@t3tools/shared/httpObservability";
+import * as HttpObservability from "@t3tools/shared/httpObservability";
 
 import {
   RelayApi,
@@ -67,6 +67,7 @@ import * as RelayTokens from "../auth/RelayTokens.ts";
 import * as EnvironmentCredentials from "../environments/EnvironmentCredentials.ts";
 import * as EnvironmentLinks from "../environments/EnvironmentLinks.ts";
 import * as HookForwarder from "../hooks/HookForwarder.ts";
+import * as HeldHooks from "../hooks/HeldHooks.ts";
 import * as HookInbox from "../hooks/HookInbox.ts";
 import * as LiveActivities from "../agentActivity/LiveActivities.ts";
 import * as RelayConfiguration from "../Config.ts";
@@ -145,7 +146,7 @@ const appendRelayTraceContextResponseHeader = Effect.gen(function* () {
   );
 }).pipe(Effect.ignore);
 
-export const relayCors = HttpRouter.middleware(
+export const layerCors = HttpRouter.middleware(
   Effect.fnUntraced(function* <E, R>(
     httpEffect: Effect.Effect<
       HttpServerResponse.HttpServerResponse,
@@ -170,13 +171,13 @@ export const relayCors = HttpRouter.middleware(
   { global: true },
 );
 
-export const relayNotFoundRoute = HttpRouter.add(
+export const layerNotFoundRoute = HttpRouter.add(
   "*",
   "/*",
   HttpServerResponse.empty({ status: 404 }),
 );
 
-export const relayDocsRedirectRoute = HttpRouter.add(
+export const layerDocsRedirectRoute = HttpRouter.add(
   "GET",
   "/",
   HttpServerResponse.redirect("/docs"),
@@ -279,7 +280,7 @@ export const traceRelayHttpRequest = <E, R>(
 
 // Webhook senders put shared secrets and signatures in headers such as
 // x-hub-signature-256, stripe-signature, x-gitlab-token and x-webhook-key.
-const webhookHeaderRedactionLayer = Layer.effect(
+const layerWebhookHeaderRedaction = Layer.effect(
   Headers.CurrentRedactedNames,
   Effect.map(Headers.CurrentRedactedNames, (names) => [
     ...names,
@@ -303,7 +304,7 @@ export const traceRelayHttpRequestWith = <E, R, LayerError, LayerRequirements>(
     Effect.provide(
       Layer.merge(
         tracerLayer,
-        webhookHeaderRedactionLayer.pipe(Layer.provide(httpHeaderRedactionLayer)),
+        layerWebhookHeaderRedaction.pipe(Layer.provide(HttpObservability.layer)),
       ),
     ),
   );
@@ -318,7 +319,7 @@ export const withoutCapturedParentSpan = <A, E, R>(
     return effect.pipe(Effect.ensuring(Effect.sync(() => fiber.setContext(context))));
   });
 
-export const relayClientAuthLayer = Layer.effect(
+export const layerClientAuth = Layer.effect(
   RelayClientAuth,
   Effect.gen(function* () {
     const config = yield* RelayConfiguration.RelayConfiguration;
@@ -357,7 +358,7 @@ export const relayClientAuthLayer = Layer.effect(
   }),
 );
 
-export const relayEnvironmentAuthLayer = Layer.effect(
+export const layerEnvironmentAuth = Layer.effect(
   RelayEnvironmentAuth,
   Effect.gen(function* () {
     const credentials = yield* EnvironmentCredentials.EnvironmentCredentials;
@@ -390,7 +391,7 @@ export const relayEnvironmentAuthLayer = Layer.effect(
   }),
 );
 
-export const relayDpopClientAuthLayer = Layer.effect(
+export const layerDpopClientAuth = Layer.effect(
   RelayDpopClientAuth,
   Effect.gen(function* () {
     const relayTokens = yield* RelayTokens.RelayTokens;
@@ -437,7 +438,7 @@ function readHttpAuthorizationCredential(credential: Redacted.Redacted<string>):
   return Redacted.value(credential).trimStart();
 }
 
-export const metadataApi = HttpApiBuilder.group(
+export const layerMetadataApi = HttpApiBuilder.group(
   RelayApi,
   "metadata",
   Effect.fnUntraced(function* (handlers) {
@@ -471,7 +472,7 @@ export const metadataApi = HttpApiBuilder.group(
   }),
 );
 
-export const healthApi = HttpApiBuilder.group(
+export const layerHealthApi = HttpApiBuilder.group(
   RelayApi,
   "health",
   Effect.fnUntraced(function* (handlers) {
@@ -554,7 +555,7 @@ export const unlinkEnvironmentRecord = Effect.fn("relay.api.client.unlinkEnviron
     // is already gone, and its inbox drops anything left after its TTL.
     const endpointKey =
       deprovisionTarget && input.managedEndpointNamespace
-        ? HookForwarder.endpointKeyForTunnelName(
+        ? HeldHooks.endpointKeyForTunnelName(
             input.managedEndpointNamespace,
             deprovisionTarget.tunnelName,
           )
@@ -767,7 +768,7 @@ export const recoverEnvironmentTunnelRecord = Effect.fn(
   };
 });
 
-export const mobileApi = HttpApiBuilder.group(
+export const layerMobileApi = HttpApiBuilder.group(
   RelayApi,
   "mobile",
   Effect.fnUntraced(function* (handlers) {
@@ -824,7 +825,7 @@ export const mobileApi = HttpApiBuilder.group(
   }),
 );
 
-export const clientApi = HttpApiBuilder.group(
+export const layerClientApi = HttpApiBuilder.group(
   RelayApi,
   "client",
   Effect.fnUntraced(function* (handlers) {
@@ -1005,7 +1006,7 @@ export const clientApi = HttpApiBuilder.group(
   }),
 );
 
-export const tokenApi = HttpApiBuilder.group(
+export const layerTokenApi = HttpApiBuilder.group(
   RelayApi,
   "token",
   Effect.fnUntraced(function* (handlers) {
@@ -1067,7 +1068,7 @@ export const tokenApi = HttpApiBuilder.group(
   }),
 );
 
-export const dpopClientApi = HttpApiBuilder.group(
+export const layerDpopClientApi = HttpApiBuilder.group(
   RelayApi,
   "dpopClient",
   Effect.fnUntraced(function* (handlers) {
@@ -1170,45 +1171,19 @@ export const dpopClientApi = HttpApiBuilder.group(
   }),
 );
 
-export const serverApi = HttpApiBuilder.group(
+export const layerServerApi = HttpApiBuilder.group(
   RelayApi,
   "server",
   Effect.fnUntraced(function* (handlers) {
     const publisher = yield* AgentActivityPublisher.AgentActivityPublisher;
     const publishSignatures = yield* EnvironmentPublishSignatures.EnvironmentPublishSignatures;
-    const links = yield* EnvironmentLinks.EnvironmentLinks;
-    const inbox = yield* HookInbox.HookInbox;
-    const allocations = yield* ManagedEndpointAllocations.ManagedEndpointAllocations;
-    const settings = yield* RelayConfiguration.RelayConfiguration;
+    const heldHooks = yield* HeldHooks.HeldHooks;
     const requireOwnEnvironment = (environmentId: string) =>
       Effect.gen(function* () {
         const principal = yield* RelayEnvironmentPrincipal;
         if (principal.environmentId !== environmentId) {
           return yield* new HttpApiError.Unauthorized({});
         }
-      });
-    /**
-     * Endpoint keys of the managed links the calling environment key proved.
-     * The environment id alone would also match other accounts' links of it.
-     */
-    const ownEndpointKeys = (environmentId: string) =>
-      Effect.gen(function* () {
-        const principal = yield* RelayEnvironmentPrincipal;
-        const namespace = settings.managedEndpointNamespace;
-        if (!namespace) return [];
-        const ownLinks = yield* links.findActiveManagedForEnvironment({
-          environmentId,
-          environmentPublicKey: principal.environmentPublicKey,
-        });
-        const keys: Array<string> = [];
-        for (const link of ownLinks) {
-          const allocation = yield* allocations.get({ userId: link.userId, environmentId });
-          const key = allocation
-            ? HookForwarder.endpointKeyForTunnelName(namespace, allocation.tunnelName)
-            : null;
-          if (key !== null) keys.push(key);
-        }
-        return keys;
       });
     const activityHandlers = handlers.handle(
       "publishAgentActivity",
@@ -1425,18 +1400,11 @@ export const serverApi = HttpApiBuilder.group(
         Effect.fn("relay.api.server.updateLinkPreferences")(function* ({ params, payload }) {
           yield* requireOwnEnvironment(params.environmentId);
           const principal = yield* RelayEnvironmentPrincipal;
-          yield* links.setHoldWebhooksWhileOffline({
+          yield* heldHooks.setHoldWhileOffline({
             environmentId: params.environmentId,
             environmentPublicKey: principal.environmentPublicKey,
             holdWebhooksWhileOffline: payload.holdWebhooksWhileOffline,
           });
-          // Opting out also drops what is already held, rather than delivering
-          // it later to an environment that said it does not want it.
-          if (!payload.holdWebhooksWhileOffline) {
-            for (const endpointKey of yield* ownEndpointKeys(params.environmentId)) {
-              yield* inbox.clear({ endpointKey });
-            }
-          }
           return payload;
         }, mapRelayCommonApiErrors("not_authorized")),
       )
@@ -1444,21 +1412,11 @@ export const serverApi = HttpApiBuilder.group(
         "wakeHeldHooks",
         Effect.fn("relay.api.server.wakeHeldHooks")(function* ({ params }) {
           yield* requireOwnEnvironment(params.environmentId);
-          let pending = false;
-          for (const endpointKey of yield* ownEndpointKeys(params.environmentId)) {
-            const endpoint = yield* HookForwarder.resolveHookEndpoint(endpointKey).pipe(
-              Effect.provideService(EnvironmentLinks.EnvironmentLinks, links),
-              Effect.provideService(
-                ManagedEndpointAllocations.ManagedEndpointAllocations,
-                allocations,
-              ),
-              Effect.provideService(RelayConfiguration.RelayConfiguration, settings),
-            );
-            if (endpoint === null) continue;
-            if (yield* inbox.wake({ endpointKey, baseUrl: endpoint.httpBaseUrl })) {
-              pending = true;
-            }
-          }
+          const principal = yield* RelayEnvironmentPrincipal;
+          const pending = yield* heldHooks.wake({
+            environmentId: params.environmentId,
+            environmentPublicKey: principal.environmentPublicKey,
+          });
           return { pending };
         }, mapRelayCommonApiErrors("not_authorized")),
       );
